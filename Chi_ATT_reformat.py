@@ -623,7 +623,7 @@ def print_cluster_acronym_stats(out, print_for=DEFAULT_PRINT_FOR):
         c = summary["cluster"]
         print(f"\n===== CLUSTER {c} ACRONYMS =====")
         
-        for item in summary["top_acronyms"][:33]:
+        for item in summary["top_acronyms"]:
             if print_for == "chi":
                 printing = f"{  item['acronym']:>4} | chi≈{item['contrib']:.4f}"
             elif print_for == "cross_score":
