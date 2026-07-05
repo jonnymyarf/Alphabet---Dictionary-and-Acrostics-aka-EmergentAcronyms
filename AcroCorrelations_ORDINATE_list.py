@@ -9,7 +9,7 @@ import statistics
 import re
 
 
-ordinate_list = ["philosophy", "revolutionary", "happiness", "good"]
+ordinate_list = ["widespread repair", "addiction recovery", "revolutionary", "happiness", "good"]
 ORDINATE = "philosophy"
 ACRO = "/\\"
 RUN_MANY_NULLS = False
@@ -384,9 +384,10 @@ def extract_acro_events(
         for sentence_id, words in tokenized_sentences:
 
             # Need n acro words plus one next word.
-            for i in range(0, len(words) - n):
+            for i in range(1, len(words) - n):
                 acro_words = words[i:i+n]
                 next_word = words[i+n]
+                prior_word = words[i-1]
 
                 acro = "".join(first_initial(w) for w in acro_words)
                 next_initial = first_initial(next_word)
@@ -395,6 +396,11 @@ def extract_acro_events(
                     next_word,
                     ordinate=ordinate
                 )
+                ordinate_score_prior = sbert_similarity_to_ordinate(
+                    prior_word,
+                    ordinate=ordinate
+                )
+                ordinate_score_change = (ordinate_score - ordinate_score_prior) / (ordinate_score + ordinate_score_prior)
 
                 rows.append({
                     "dataset_kind": dataset_kind,
@@ -405,9 +411,11 @@ def extract_acro_events(
                     "n": n,
                     "acro": acro,
                     "next_word": next_word,
+                    "prior_word": prior_word,
                     "next_initial": next_initial,
                     "ordinate": ordinate,
                     "ordinate_score": ordinate_score,
+                    "ordinate_score_change": ordinate_score_change,
                 })
 
                 pbar.update(1)
@@ -421,7 +429,7 @@ typical_events = extract_acro_events(
     sentences=typical_sentences,
     dataset_kind="typical",
     source_type="leipzig",
-    n=2,
+    n=1,
     ordinate=ORDINATE
 )
 
@@ -429,7 +437,7 @@ null_events = extract_acro_events(
     sentences=null_sentences,
     dataset_kind="null",
     source_type="leipzig",
-    n=2,
+    n=1,
     null_run_id=1,
     ordinate=ORDINATE
 )
@@ -441,7 +449,7 @@ null_events = extract_acro_events(
 # STEP B3: Score acro → semantic ordinate
 # -------------------------
 
-def score_acro_next_ordinate_score(rows, acro, ordinate=ORDINATE):
+def score_acro_next_ordinate_score(rows, acro, ordinate=ORDINATE, rate_ordinate_score="ordinate_score"):
     relevant = [
         r for r in rows
         if r["acro"] == acro and r["ordinate"] == ordinate
@@ -450,9 +458,14 @@ def score_acro_next_ordinate_score(rows, acro, ordinate=ORDINATE):
     if len(relevant) == 0:
         return None
 
-    rate_ordinate_score = (
-        sum(r["ordinate_score"] for r in relevant) / len(relevant)
-    )
+    if rate_ordinate_score == "ordinate_score_change":
+        rate_ordinate_score = (
+            sum(r["ordinate_score_change"] for r in relevant) / len(relevant)
+        )
+    elif rate_ordinate_score == "ordinate_score":
+        rate_ordinate_score = (
+            sum(r["ordinate_score"] for r in relevant) / len(relevant)
+        )
 
     return {
         "acro": acro,
@@ -461,17 +474,20 @@ def score_acro_next_ordinate_score(rows, acro, ordinate=ORDINATE):
         "rate_ordinate_score": rate_ordinate_score,
     }
 
+rate_ordinate_score="ordinate_score_change"
 
 real_bs_happiness = score_acro_next_ordinate_score(
     typical_events,
     acro=ACRO,
-    ordinate=ORDINATE
+    ordinate=ORDINATE,
+    rate_ordinate_score=rate_ordinate_score
 )
 
 null_bs_happiness = score_acro_next_ordinate_score(
     null_events,
     acro=ACRO,
-    ordinate=ORDINATE
+    ordinate=ORDINATE,
+    rate_ordinate_score=rate_ordinate_score
 )
 
 print(f"Real {ACRO}→{ORDINATE}:", real_bs_happiness)
@@ -517,15 +533,18 @@ for length in range(1, 3):
             real_score = score_acro_next_ordinate_score(
                 typical_events_by_ordinate[ORDINATE],
                 acro=acronym,
-                ordinate=ORDINATE
+                ordinate=ORDINATE,
+                rate_ordinate_score=rate_ordinate_score
             )
-
+#'''
             null_score = score_acro_next_ordinate_score(
                 null_events_by_ordinate[ORDINATE],
                 acro=acronym,
-                ordinate=ORDINATE
+                ordinate=ORDINATE,
+                rate_ordinate_score=rate_ordinate_score
             )
-
+            run_many_nulls
+#'''
             if real_score is None:
                 continue
 
@@ -539,7 +558,7 @@ for length in range(1, 3):
                 real_score["count_acro"]
             ))
 
-def print_score_list_multiOrdinate(score_list, sortby="acronym", reverse=False, keepPercent=0.5):
+def print_score_list_multiOrdinate(score_list, sortby="acronym", reverse=False, keepPercent=0.5, null_keys=None):
     def sortby_multiOrdinate(grouped_data, sortby="acronym", reverse=False):
         def get_sort_value(item):
             if sortby == "length":
@@ -550,6 +569,9 @@ def print_score_list_multiOrdinate(score_list, sortby="acronym", reverse=False, 
 
             if sortby == "count":
                 return item["count"]
+                
+            if sortby == "z":
+                return item["z"]
 
             # Otherwise, assume sortby is an ordinate word, like "happiness"
             for ordinate, score in item["ordinates"]:
@@ -562,18 +584,35 @@ def print_score_list_multiOrdinate(score_list, sortby="acronym", reverse=False, 
         return sorted(grouped_data, key=get_sort_value, reverse=reverse)
 
     grouped = {}
+    
+    if null_keys==None:
+        for length, acronym, ordinate, score, count in score_list:
+            key = (length, acronym)
 
-    for length, acronym, ordinate, score, count in score_list:
-        key = (length, acronym)
+            grouped.setdefault(key, {
+                "length": length,
+                "acronym": acronym,
+                "count": count,
+                "ordinates": []
+            })
 
-        grouped.setdefault(key, {
-            "length": length,
-            "acronym": acronym,
-            "count": count,
-            "ordinates": []
-        })
+            grouped[key]["ordinates"].append((ordinate, score))
+    else:
+        for length, acronym, ordinate, score, count in score_list:
+            key = (length, acronym)
+            null_scores = null_keys[acronym]
+            z = z_score(score, null_scores)
 
-        grouped[key]["ordinates"].append((ordinate, score))
+            grouped.setdefault(key, {
+                "length": length,
+                "acronym": acronym,
+                "count": count,
+                "ordinates": [],
+                "z": null_keys[acronym]
+            })
+
+            grouped[key]["ordinates"].append((ordinate, score))
+    
 
     sorted_data = list(grouped.values())
 
@@ -594,6 +633,7 @@ def print_score_list_multiOrdinate(score_list, sortby="acronym", reverse=False, 
             for ordinate, score in item["ordinates"]
         )
 
+        #print(f"{item['acronym']}, z_{item['ordinates'][0]}={item['z']}: {ordinate_text}    Count={item['count']}")
         print(f"{item['acronym']}: {ordinate_text}    Count={item['count']}")
 
 print_score_list_multiOrdinate(
@@ -617,7 +657,8 @@ def run_many_nulls(
     n,
     acro,
     ordinate=ORDINATE,
-    runs=100
+    runs=100,
+    rate_ordinate_score = "ordinate_score"
 ):
     null_scores = []
 
@@ -625,7 +666,8 @@ def run_many_nulls(
         null_sentences = generate_null_sentences(
             real_sentences,
             vocab,
-            weights
+            weights,
+            rate_ordinate_score=rate_ordinate_score
         )
 
         null_events = extract_acro_events(
@@ -636,16 +678,32 @@ def run_many_nulls(
             null_run_id=run_id,
             ordinate=ordinate
         )
-
-        score = score_acro_next_ordinate_score(
-            null_events,
-            acro,
-            ordinate
-        )
-
-        if score is not None:
-            null_scores.append(score["rate_ordinate_score"])
-
+        if not isinstance(acro, list):
+            score = score_acro_next_ordinate_score(
+                null_events,
+                acro,
+                ordinate,
+                rate_ordinate_score=rate_ordinate_score
+            )
+            if score is not None:
+                null_scores.append(score["rate_ordinate_score"])
+        else:
+            
+            for ac in acro:
+                keyed_list = {ac: []}
+                null_scores_ac = []
+                print(ac)
+                score = score_acro_next_ordinate_score(
+                    null_events,
+                    ac,
+                    ordinate,
+                    rate_ordinate_score=rate_ordinate_score
+                )
+                if score is not None:
+                    null_scores_ac.append(score["rate_ordinate_score"])
+                keyed_list[ac].append(null_scores_ac)
+    if not isinstance(acro, list):
+        null_scores = keyed_list
     return null_scores
 
 
@@ -661,7 +719,11 @@ def z_score(real_value, null_values):
     }
 
 if(RUN_MANY_NULLS):
-    null_bs_happiness_rates = run_many_nulls(
+    ACRO = []
+    for length in range(1, 3):
+        for letters in product(list26, repeat=length):
+            ACRO.append(letters)
+    null_keys = run_many_nulls(
         real_sentences=typical_sentences,
         vocab=vocab,
         weights=weights,
@@ -671,8 +733,19 @@ if(RUN_MANY_NULLS):
         runs=100
     )
 
-    real_bs_happiness_rate = real_bs_happiness["rate_ordinate_score"]
+    '''real_bs_happiness_rate = real_bs_happiness["rate_ordinate_score"]
 
     result = z_score(real_bs_happiness_rate, null_bs_happiness_rates)
 
-    print(result)
+    print(result)#'''
+    
+    
+
+'''
+print_score_list_multiOrdinate(
+    score_list,
+    sortby=ordinate_list[0],#ordinate_list[0],
+    reverse=False,
+    keepPercent = 0.5,  
+    null_keys=null_keys
+)'''
